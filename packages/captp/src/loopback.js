@@ -1,6 +1,7 @@
 import { Far } from '@endo/marshal';
 import { E, makeCapTP } from './captp.js';
 import { nearTrapImpl } from './trap.js';
+import { makeFinalizingMap } from './finalize.js';
 
 export { E };
 
@@ -21,22 +22,22 @@ export { E };
  *   makeTrapHandler<T>(x: T): T,
  *   isOnlyNear(x: any): boolean,
  *   isOnlyFar(x: any): boolean,
+ *   getNearStats(): any,
+ *   getFarStats(): any,
  *   Trap: Trap
  * }}
  */
 export const makeLoopback = (ourId, nearOptions, farOptions) => {
-  let nextNonce = 0;
-  const nonceToRef = new Map();
+  let lastNonce = 0;
+  const nonceToRef = makeFinalizingMap();
 
-  const bootstrap = harden({
-    refGetter: Far('refGetter', {
-      getRef(nonce) {
-        // Find the local ref for the specified nonce.
-        const xFar = nonceToRef.get(nonce);
-        nonceToRef.delete(nonce);
-        return xFar;
-      },
-    }),
+  const bootstrap = Far('refGetter', {
+    getRef(nonce) {
+      // Find the local ref for the specified nonce.
+      const xFar = nonceToRef.get(nonce);
+      nonceToRef.delete(nonce);
+      return xFar;
+    },
   });
 
   const slotBody = JSON.stringify({
@@ -49,6 +50,7 @@ export const makeLoopback = (ourId, nearOptions, farOptions) => {
     Trap,
     dispatch: nearDispatch,
     getBootstrap: getFarBootstrap,
+    getStats: getNearStats,
     isOnlyLocal: isOnlyNear,
     // eslint-disable-next-line no-use-before-define
   } = makeCapTP(`near-${ourId}`, o => farDispatch(o), bootstrap, {
@@ -76,25 +78,27 @@ export const makeLoopback = (ourId, nearOptions, farOptions) => {
     makeTrapHandler,
     dispatch: farDispatch,
     getBootstrap: getNearBootstrap,
+    getStats: getFarStats,
     isOnlyLocal: isOnlyFar,
     unserialize: farUnserialize,
     serialize: farSerialize,
   } = makeCapTP(`far-${ourId}`, nearDispatch, bootstrap, farOptions);
 
-  const farGetter = E.get(getFarBootstrap()).refGetter;
-  const nearGetter = E.get(getNearBootstrap()).refGetter;
+  const farGetter = getFarBootstrap();
+  const nearGetter = getNearBootstrap();
 
   /**
-   * @param {ERef<{ getRef(nonce: number): any }>} refGetter
+   * @param {ERef<{ getRef(nonce: number): unknown }>} refGetter
    */
   const makeRefMaker = refGetter =>
     /**
-     * @param {any} x
+     * @param {unknown} x
      */
     async x => {
-      const myNonce = nextNonce;
-      nextNonce += 1;
-      nonceToRef.set(myNonce, harden(x));
+      lastNonce += 1;
+      const myNonce = lastNonce;
+      const val = await x;
+      nonceToRef.set(myNonce, harden(val));
       return E(refGetter).getRef(myNonce);
     };
 
@@ -103,6 +107,8 @@ export const makeLoopback = (ourId, nearOptions, farOptions) => {
     makeNear: makeRefMaker(nearGetter),
     isOnlyNear,
     isOnlyFar,
+    getNearStats,
+    getFarStats,
     makeTrapHandler,
     Trap,
   };
